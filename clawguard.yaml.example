@@ -48,25 +48,38 @@ services:
         - match: { method: POST }
           action: require_approval
 
-  # ─── OAuth2 service (e.g. Minexus) ─────────────────────
+  # ─── OAuth2 service (e.g. Stripe) ──────────────────────
   # For APIs that use OAuth2 client_credentials flow.
   # The script sends dummy client_id/client_secret to the /token endpoint,
   # ClawGuard replaces them with the real ones before forwarding.
-  # minexus:
-  #   upstream: https://api.sdlcminexus.click/api/v1
+  # stripe:
+  #   upstream: https://api.stripe.com
   #   auth:
   #     type: oauth2_client_credentials
   #     token: "unused"
-  #     tokenPath: /token                      # where the script POSTs for tokens
-  #     clientId: "real-client-id"
-  #     clientSecret: "real-client-secret"
+  #     tokenPath: /oauth/token                # where the script POSTs for tokens
+  #     clientId: "ca_your-client-id"
+  #     clientSecret: "sk_live_your-client-secret"
   #   policy:
   #     default: require_approval
   #     rules:
   #       - match: { method: GET }
   #         action: auto_approve
-  #       - match: { method: POST, path: /token }
+  #       - match: { method: POST, path: /oauth/token }
   #         action: auto_approve               # let token exchange pass through
+
+  # ─── Anthropic (Claude API) ─────────────────────────────
+  anthropic:
+    upstream: https://api.anthropic.com
+    auth:
+      type: header
+      headerName: x-api-key
+      token: "sk-ant-your-api-key"
+    policy:
+      default: require_approval
+      rules:
+        - match: { method: POST, path: "/v1/messages" }
+          action: require_approval           # API calls always need approval
 
   # ─── Slack ──────────────────────────────────────────────
   slack:
@@ -92,8 +105,9 @@ security:
     - httpbin.org
     - api.github.com
     - api.openai.com
+    - api.anthropic.com
+    - api.stripe.com
     - slack.com
-    # - api.sdlcminexus.click
   blockPrivateIPs: true
   followRedirects: false
   maxPayloadLogSize: 10240
