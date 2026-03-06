@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 ## [Unreleased]
 
 ### Added
+- Multi-account routing via `dummyToken` selector: when multiple services share the same hostname, ClawGuard matches the incoming credential against each service's `dummyToken` to pick the right one (e.g. `GH_TOKEN=personal` vs `GH_TOKEN=work` for two GitHub accounts).
+- Config validation for `dummyToken`: duplicate values on the same hostname cause a startup error; missing values on some services trigger a warning.
 - Discovery policy control for unknown hosts in HTTPS proxy mode: `proxy.discoveryPolicy` with values `block` (default) and `silent_allow` (explicit opt-in).
 - Runtime SSRF validation in discovery MITM forwarding path (allowlist/protocol validation + DNS private-IP check).
 - Discovery `silent_allow` requests now generate audit entries (status + path/method/client IP) like other proxy paths.

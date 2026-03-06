@@ -13,6 +13,7 @@ export interface ServiceConfig {
   auth: {
     type: 'bearer' | 'header' | 'query' | 'oauth2_client_credentials';
     token: string;
+    dummyToken?: string;   // selector when multiple services share a hostname
     headerName?: string;   // for type: 'header'
     paramName?: string;    // for type: 'query' (e.g. 'appid' for OpenWeatherMap)
     // for type: 'oauth2_client_credentials'

@@ -150,21 +150,97 @@ function resolveServiceByHostname(
   hostname: string,
   services: Record<string, ServiceConfig>
 ): { name: string; config: ServiceConfig } | null {
+  const all = resolveAllServicesByHostname(hostname, services);
+  return all.length > 0 ? all[0] : null;
+}
+
+/**
+ * Returns ALL services matching a hostname (for multi-account dummyToken routing).
+ */
+function resolveAllServicesByHostname(
+  hostname: string,
+  services: Record<string, ServiceConfig>
+): { name: string; config: ServiceConfig }[] {
+  const matches: { name: string; config: ServiceConfig }[] = [];
   for (const [name, svc] of Object.entries(services)) {
-    // Check explicit hostnames
     if (svc.hostnames?.some((h) => h === hostname)) {
-      return { name, config: svc };
+      matches.push({ name, config: svc });
+      continue;
     }
-    // Check upstream hostname
     try {
       const upstreamHost = new URL(svc.upstream).hostname;
       if (upstreamHost === hostname) {
-        return { name, config: svc };
+        matches.push({ name, config: svc });
       }
     } catch {
       // skip invalid upstream URLs
     }
   }
+  return matches;
+}
+
+/**
+ * Given an HTTP request and multiple candidate services sharing a hostname,
+ * selects the right service by matching the incoming credential against each
+ * candidate's `dummyToken` value.
+ */
+function resolveByDummyToken(
+  req: http.IncomingMessage,
+  candidates: { name: string; config: ServiceConfig }[]
+): { name: string; config: ServiceConfig } | null {
+  // Collect all possible incoming credential values from the request
+  const incomingValues: string[] = [];
+
+  // Authorization header: extract value after prefix (Bearer/token/Basic)
+  const authHeader = req.headers['authorization'] as string | undefined;
+  if (authHeader) {
+    const prefixMatch = authHeader.match(/^(?:Bearer|token)\s+(.+)$/i);
+    if (prefixMatch) {
+      incomingValues.push(prefixMatch[1]);
+    }
+    const basicMatch = authHeader.match(/^Basic\s+(.+)$/i);
+    if (basicMatch) {
+      try {
+        const decoded = Buffer.from(basicMatch[1], 'base64').toString('utf-8');
+        const colonIdx = decoded.indexOf(':');
+        incomingValues.push(colonIdx >= 0 ? decoded.substring(0, colonIdx) : decoded);
+      } catch { /* ignore */ }
+    }
+    // Also try the raw header value
+    incomingValues.push(authHeader);
+  }
+
+  // Custom headers and query params (per candidate config)
+  for (const candidate of candidates) {
+    const { config } = candidate;
+    const dummy = config.auth.dummyToken;
+    if (!dummy) continue;
+
+    // Check all auth-header-derived values first
+    if (incomingValues.includes(dummy)) {
+      return candidate;
+    }
+
+    // Check custom header
+    if (config.auth.headerName) {
+      const val = req.headers[config.auth.headerName.toLowerCase()] as string | undefined;
+      if (val === dummy) return candidate;
+    }
+
+    // Check query param
+    if (config.auth.paramName) {
+      try {
+        const url = new URL(req.url || '/', 'https://placeholder');
+        const val = url.searchParams.get(config.auth.paramName);
+        if (val === dummy) return candidate;
+      } catch { /* ignore */ }
+    }
+  }
+
+  // Fallback: if exactly one candidate has no dummyToken, use it as default
+  const noDummy = candidates.filter(c => !c.config.auth.dummyToken);
+  if (noDummy.length === 1) return noDummy[0];
+
   return null;
 }
 
@@ -223,9 +299,9 @@ export function attachMitmProxy(
       return;
     }
 
-    // Resolve hostname to a configured service
-    const match = resolveServiceByHostname(hostname, config.services);
-    if (!match) {
+    // Resolve hostname to configured service(s)
+    const matches = resolveAllServicesByHostname(hostname, config.services);
+    if (matches.length === 0) {
       // Always track unknown hosts for discovery suggestions
       trackDiscoveredHost(hostname);
 
@@ -257,9 +333,29 @@ export function attachMitmProxy(
     const innerServer = http.createServer();
 
     innerServer.on('request', (innerReq: http.IncomingMessage, innerRes: http.ServerResponse) => {
+      // Single match: use it directly (backward compatible)
+      // Multiple matches: resolve by dummyToken
+      let resolved: { name: string; config: ServiceConfig } | null;
+      if (matches.length === 1) {
+        resolved = matches[0];
+      } else {
+        resolved = resolveByDummyToken(innerReq, matches);
+        if (!resolved) {
+          const authHeader = innerReq.headers['authorization'] || '(none)';
+          const names = matches.map(m => `${m.name} (dummyToken: ${m.config.auth.dummyToken || 'none'})`).join(', ');
+          console.error(`🚫 MITM: no dummyToken match for ${hostname}. Incoming Authorization: ${authHeader}. Candidates: ${names}`);
+          innerRes.writeHead(400, { 'Content-Type': 'application/json' });
+          innerRes.end(JSON.stringify({
+            error: 'Multiple services match this hostname. Set the correct dummyToken credential to select one.',
+            candidates: matches.map(m => m.name),
+          }));
+          return;
+        }
+      }
+
       handleMitmRequest(
         innerReq, innerRes,
-        match.name, match.config,
+        resolved.name, resolved.config,
         config, approvalManager, audit, clientIp
       );
     });

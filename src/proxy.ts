@@ -79,13 +79,81 @@ function resolveServiceByHost(
   host: string | undefined,
   services: Record<string, ServiceConfig>
 ): { name: string; config: ServiceConfig } | null {
-  if (!host) return null;
-  const hostname = host.split(':')[0]; // strip port
+  const all = resolveAllServicesByHost(host, services);
+  return all.length > 0 ? all[0] : null;
+}
+
+/**
+ * Returns ALL services matching a host (for multi-account dummyToken routing).
+ */
+function resolveAllServicesByHost(
+  host: string | undefined,
+  services: Record<string, ServiceConfig>
+): { name: string; config: ServiceConfig }[] {
+  if (!host) return [];
+  const hostname = host.split(':')[0];
+  const matches: { name: string; config: ServiceConfig }[] = [];
   for (const [name, svc] of Object.entries(services)) {
     if (svc.hostnames?.some((h) => h === hostname)) {
-      return { name, config: svc };
+      matches.push({ name, config: svc });
     }
   }
+  return matches;
+}
+
+/**
+ * Given an Express request and multiple candidate services sharing a hostname,
+ * selects the right service by matching the incoming credential against each
+ * candidate's `dummyToken` value.
+ */
+function resolveByDummyToken(
+  req: Request,
+  candidates: { name: string; config: ServiceConfig }[]
+): { name: string; config: ServiceConfig } | null {
+  // Collect all possible incoming credential values from the request
+  const incomingValues: string[] = [];
+
+  const authHeader = req.headers['authorization'] as string | undefined;
+  if (authHeader) {
+    const prefixMatch = authHeader.match(/^(?:Bearer|token)\s+(.+)$/i);
+    if (prefixMatch) {
+      incomingValues.push(prefixMatch[1]);
+    }
+    const basicMatch = authHeader.match(/^Basic\s+(.+)$/i);
+    if (basicMatch) {
+      try {
+        const decoded = Buffer.from(basicMatch[1], 'base64').toString('utf-8');
+        const colonIdx = decoded.indexOf(':');
+        incomingValues.push(colonIdx >= 0 ? decoded.substring(0, colonIdx) : decoded);
+      } catch { /* ignore */ }
+    }
+    incomingValues.push(authHeader);
+  }
+
+  for (const candidate of candidates) {
+    const { config } = candidate;
+    const dummy = config.auth.dummyToken;
+    if (!dummy) continue;
+
+    if (incomingValues.includes(dummy)) {
+      return candidate;
+    }
+
+    if (config.auth.headerName) {
+      const val = req.headers[config.auth.headerName.toLowerCase()] as string | undefined;
+      if (val === dummy) return candidate;
+    }
+
+    if (config.auth.paramName) {
+      const val = req.query[config.auth.paramName] as string | undefined;
+      if (val === dummy) return candidate;
+    }
+  }
+
+  // Fallback: if exactly one candidate has no dummyToken, use it as default
+  const noDummy = candidates.filter(c => !c.config.auth.dummyToken);
+  if (noDummy.length === 1) return noDummy[0];
+
   return null;
 }
 
@@ -95,11 +163,26 @@ function handleHostProxy(
   audit: AuditLogger
 ) {
   return async (req: Request, res: Response): Promise<void> => {
-    const match = resolveServiceByHost(req.headers.host, config.services);
+    const matches = resolveAllServicesByHost(req.headers.host, config.services);
 
-    if (!match) {
+    if (matches.length === 0) {
       res.status(404).json({ error: 'Unknown host. Configure hostnames in service config for host-based routing.' });
       return;
+    }
+
+    let match: { name: string; config: ServiceConfig };
+    if (matches.length === 1) {
+      match = matches[0];
+    } else {
+      const resolved = resolveByDummyToken(req, matches);
+      if (!resolved) {
+        res.status(400).json({
+          error: 'Multiple services match this hostname. Set the correct dummyToken credential to select one.',
+          candidates: matches.map(m => m.name),
+        });
+        return;
+      }
+      match = resolved;
     }
 
     const serviceName = match.name;

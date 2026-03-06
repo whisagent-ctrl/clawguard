@@ -330,6 +330,59 @@ Hosts that are **not** configured as services in `clawguard.yaml` are handled by
 
 Configured services always get full MITM with approval policies and token injection.
 
+#### 6. Multi-account routing with `dummyToken`
+
+When you have multiple accounts on the same API (e.g. two GitHub identities), you can't distinguish them by hostname alone. The `dummyToken` field lets you select which service to use based on the credential the client sends.
+
+**Config:**
+
+```yaml
+services:
+  github-personal:
+    upstream: https://api.github.com
+    hostnames: [api.github.com]
+    auth:
+      type: bearer
+      token: "ghp_REAL_personal_token"
+      dummyToken: "personal"           # ← selector value
+    policy:
+      default: auto_approve
+
+  github-work:
+    upstream: https://api.github.com
+    hostnames: [api.github.com]
+    auth:
+      type: bearer
+      token: "ghp_REAL_work_token"
+      dummyToken: "work"
+    policy:
+      default: require_approval
+```
+
+**Usage:**
+
+```bash
+GH_TOKEN=personal gh repo list    # → uses personal token
+GH_TOKEN=work gh api user          # → uses work token
+```
+
+ClawGuard extracts the dummy credential from the incoming request (`Authorization: token personal`), matches it against each candidate's `dummyToken`, and injects the real token before forwarding upstream.
+
+**How it works across auth types:**
+
+| `auth.type` | Where ClawGuard looks for the dummy value |
+|---|---|
+| `bearer` | `Authorization: Bearer <val>` or `Authorization: token <val>` |
+| `header` | Custom header specified by `headerName` |
+| `query` | Query parameter specified by `paramName` |
+| `oauth2_client_credentials` | `client_id` from `Authorization: Basic base64(client_id:secret)` |
+
+**Edge cases:**
+- Single service per hostname → unchanged behavior, no `dummyToken` needed
+- No matching `dummyToken` → 400 error listing candidate service names
+- One candidate without `dummyToken` → acts as fallback/default
+- Duplicate `dummyToken` values for same hostname → config validation error at startup
+
 ---
 
 ### Discovery Mode

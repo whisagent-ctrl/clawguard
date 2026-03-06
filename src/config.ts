@@ -130,6 +130,40 @@ export function loadConfig(configPath: string): Config {
     process.exit(1);
   }
 
+  // ─── Validate dummyToken uniqueness per hostname ──────────
+
+  const hostnameToServices = new Map<string, { name: string; dummyToken?: string }[]>();
+  for (const [name, svc] of Object.entries(config.services)) {
+    const hostnames: string[] = [...(svc.hostnames || [])];
+    try {
+      const upstreamHost = new URL(svc.upstream).hostname;
+      if (!hostnames.includes(upstreamHost)) hostnames.push(upstreamHost);
+    } catch { /* skip */ }
+
+    for (const h of hostnames) {
+      if (!hostnameToServices.has(h)) hostnameToServices.set(h, []);
+      hostnameToServices.get(h)!.push({ name, dummyToken: svc.auth.dummyToken });
+    }
+  }
+
+  for (const [hostname, svcs] of hostnameToServices.entries()) {
+    if (svcs.length <= 1) continue;
+
+    // Check for duplicate dummyToken values
+    const tokens = svcs.filter(s => s.dummyToken).map(s => s.dummyToken!);
+    const dupes = tokens.filter((t, i) => tokens.indexOf(t) !== i);
+    if (dupes.length > 0) {
+      console.error(`❌ Duplicate dummyToken "${dupes[0]}" for hostname "${hostname}": ${svcs.filter(s => s.dummyToken === dupes[0]).map(s => s.name).join(', ')}`);
+      process.exit(1);
+    }
+
+    // Warn if some services lack dummyToken
+    const missing = svcs.filter(s => !s.dummyToken);
+    if (missing.length > 0 && missing.length < svcs.length) {
+      console.warn(`⚠️  Hostname "${hostname}" has ${svcs.length} services but ${missing.map(s => s.name).join(', ')} lack dummyToken (will act as fallback)`);
+    }
+  }
+
   return config;
 }
 

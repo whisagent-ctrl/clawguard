@@ -68,6 +68,29 @@ services:
   #       - match: { method: POST, path: /oauth/token }
   #         action: auto_approve               # let token exchange pass through
 
+  # ─── Multi-account GitHub (dummyToken selector) ────────
+  # Two GitHub accounts sharing the same hostname.
+  # Usage: GH_TOKEN=personal gh repo list   (picks github-personal)
+  #        GH_TOKEN=work gh repo list        (picks github-work)
+  # github-personal:
+  #   upstream: https://api.github.com
+  #   hostnames: [api.github.com]
+  #   auth:
+  #     type: bearer
+  #     token: "ghp_REAL_personal_token"
+  #     dummyToken: "personal"              # matches incoming Bearer value
+  #   policy:
+  #     default: auto_approve
+  # github-work:
+  #   upstream: https://api.github.com
+  #   hostnames: [api.github.com]
+  #   auth:
+  #     type: bearer
+  #     token: "ghp_REAL_work_token"
+  #     dummyToken: "work"
+  #   policy:
+  #     default: require_approval
+
   # ─── Anthropic (Claude API) ─────────────────────────────
   anthropic:
     upstream: https://api.anthropic.com
